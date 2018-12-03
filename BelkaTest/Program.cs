@@ -28,7 +28,6 @@ namespace BelkaTest
         var blockLength = 1024;
         var bufferDictionary = new ConcurrentDictionary<int, byte[]>();
         int procCount = Environment.ProcessorCount;
-        var sinh = new Object();
         var threads = new List<Thread>(procCount);
         if (args.Length > 1)
         {
@@ -45,8 +44,6 @@ namespace BelkaTest
               outfile = x.Replace("/o=", "");
             }
           });
-          //if ((from att in args where att.Contains("/i=") == true select att).Count() > 0) infile = (from file in args where file.Contains("/i=") select file).First().Replace("/i=", "").Replace("\"", "");
-          //if ((from att in args where att.Contains("/o=") == true select att).Count() > 0) outfile = (from file in args where file.Contains("/o=") select file).First().Replace("/o=", "").Replace("\"", "");
           Console.WriteLine("Choosed operation: " + operation);
           if (infile != "")
           {
@@ -64,33 +61,33 @@ namespace BelkaTest
                     using (FileStream fsout = new FileStream(outfile, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
                     using (GZipStream gz = new GZipStream(fsout, CompressionMode.Compress, false))
                     {
-                      byte[] buffer = new byte[1024];
-                      int pos = 0;
-                      int len;
-                      var position = 0;
                       var blockCount = fsin.Length / blockLength + 1;
                       var range = Math.Ceiling((double) blockCount / procCount);
                       for (var p = 0; p < procCount; p++)
                       {
                         var start = Convert.ToInt32(p * range);
                         var stop = Convert.ToInt32(start + range);
-                        threads.Add(new Thread(() => {
+
+                        threads.Add(new Thread(() =>
+                        {
                           using (FileStream fsinput = new FileStream(infile, FileMode.Open, FileAccess.Read,
                             FileShare.Read))
                           {
-                            
-                          for (var i = start; i < stop; i++)
-                          {
-                            var buf = new byte[blockLength];
-                              fsinput.Seek(i * blockLength, SeekOrigin.Begin);
-                            fsinput.Read(buf, 0, blockLength);
-                            bufferDictionary[i] = buf;
-                          }
+                            for (var i = start; i < stop; i++)
+                            {
+                              var buf = new byte[blockLength];
+                              var len = fsinput.Read(buf, 0, blockLength);
+                              gz.Write(buf, 0, len);
+                              if (len < 1024) break;
+                              //bufferDictionary[i] = buf;
+                            }
                           }
                         }));
+
                       }
                       threads.ForEach(x => x.Start());
                       threads.ForEach(x => x.Join());
+
                      // do
                      // {
                      //   len = fsin.Read(buffer, 0, 1024);
@@ -99,6 +96,7 @@ namespace BelkaTest
                      // } while (len >= 1024);
                     }
                     Console.WriteLine("OK");
+                    Console.ReadKey();
                     return;
                   }
                   catch (Exception ee)
@@ -126,6 +124,7 @@ namespace BelkaTest
                       } while (len >= 1024);
                     }
                     Console.WriteLine("OK");
+                    Console.ReadKey();
                     return;
                   }
                   catch (Exception ee)
