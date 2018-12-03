@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -7,32 +6,35 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using NLog;
 
 namespace BelkaTest
 {
   class Program
   {
+    public static Logger logger = LogManager.GetCurrentClassLogger();
+    private const int blockLength = 1024;
+    private static Object sync = new Object();
     static void Main(string[] args)
     {
       {
         if (args.Length == 1)
         {
-          Console.WriteLine(" /u to unzip");
-          Console.WriteLine(" /z to zip");
+          Console.WriteLine(" /c to compress");
+          Console.WriteLine(" /d to decompress");
           Console.WriteLine(" /i={filepath} inputfile");
           Console.WriteLine(" /o={filepath} outputfile");
         }
         string infile = "";
         string outfile = "";
         string operation = "";
-        var blockLength = 1024;
-        var bufferDictionary = new ConcurrentDictionary<int, byte[]>();
+        
         int procCount = Environment.ProcessorCount;
         var threads = new List<Thread>(procCount);
         if (args.Length > 1)
         {
-          if (args.Contains("/z")) operation = "zip";
-          if (args.Contains("/u")) operation = "unzip";
+          if (args.Contains("/c")) operation = "compress";
+          if (args.Contains("/d")) operation = "decompress";
           args.ToList().ForEach(x =>
           {
             if (x.Contains("/i="))
@@ -45,15 +47,18 @@ namespace BelkaTest
             }
           });
           Console.WriteLine("Choosed operation: " + operation);
+          logger.Trace("Choosed operation: " + operation);
           if (infile != "")
           {
             if (outfile != "")
             {
               Console.WriteLine("Source file: " + infile);
+              logger.Trace("Source file: " + infile);
               Console.WriteLine("Output file: " + outfile);
+              logger.Trace("Output file: " + outfile);
               if (outfile != infile)
               {
-                if (operation == "zip")
+                if (operation == "compress")
                 {
                   try
                   {
@@ -73,13 +78,16 @@ namespace BelkaTest
                           using (FileStream fsinput = new FileStream(infile, FileMode.Open, FileAccess.Read,
                             FileShare.Read))
                           {
+                            var len = 0;
                             for (var i = start; i < stop; i++)
                             {
-                              var buf = new byte[blockLength];
-                              var len = fsinput.Read(buf, 0, blockLength);
-                              gz.Write(buf, 0, len);
-                              if (len < 1024) break;
-                              //bufferDictionary[i] = buf;
+                              lock (sync)
+                              {
+                                var buf = new byte[blockLength];
+                                len = fsinput.Read(buf, 0, blockLength);
+                                gz.Write(buf, 0, len);
+                              }
+                              if (len < blockLength) break;
                             }
                           }
                         }));
@@ -87,25 +95,19 @@ namespace BelkaTest
                       }
                       threads.ForEach(x => x.Start());
                       threads.ForEach(x => x.Join());
-
-                     // do
-                     // {
-                     //   len = fsin.Read(buffer, 0, 1024);
-                     //   gz.Write(buffer, 0, len);
-                     //   pos += len;
-                     // } while (len >= 1024);
                     }
-                    Console.WriteLine("OK");
+                    Console.WriteLine("Done");
+                    logger.Trace("Done");
                     Console.ReadKey();
                     return;
                   }
                   catch (Exception ee)
                   {
-                    Console.WriteLine("ERROR\n\r" + ee.Message + "\n\r" + ee.Source + "\n\r" + ee.StackTrace);
+                    Handler.ErrorHandler(ee, logger);
                     return;
                   }
                 }
-                if (operation == "unzip")
+                if (operation == "decompress")
                 {
                   try
                   {
@@ -113,48 +115,76 @@ namespace BelkaTest
                     using (FileStream fsout = new FileStream(outfile, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
                     using (GZipStream gz = new GZipStream(fsin, CompressionMode.Decompress, false))
                     {
-                      byte[] buffer = new byte[1024];
-                      int pos = 0;
-                      int len;
-                      do
+                      
+                      for (var p = 0; p < procCount; p++)
                       {
-                        len = gz.Read(buffer, 0, 1024);
-                        fsout.Write(buffer, 0, len);
-                        pos += len;
-                      } while (len >= 1024);
+                        threads.Add(new Thread(() =>
+                        {
+                          try
+                          {
+                            var len = 0;
+                            do
+                            {
+                              lock (sync)
+                              {
+                                var buf = new byte[blockLength];
+                                len = gz.Read(buf, 0, blockLength);
+                                fsout.Write(buf, 0, len);
+                              }
+                            } while (len >= 1024);
+                          }
+                          catch (Exception ee)
+                          {
+                            Handler.ErrorHandler(ee, logger);
+                          }
+                        }));
+
+                      }
+                      threads.ForEach(x => x.Start());
+                      threads.ForEach(x => x.Join());
                     }
-                    Console.WriteLine("OK");
+                    Console.WriteLine("Done");
+                    logger.Trace("Done");
                     Console.ReadKey();
-                    return;
                   }
                   catch (Exception ee)
                   {
-                    Console.WriteLine("ERROR\n\r" + ee.Message + "\n\r" + ee.Source + "\n\r" + ee.StackTrace);
-                    return;
+                    Handler.ErrorHandler(ee, logger);
                   }
                 }
               }
               else
               {
-                Console.WriteLine("ERROR\n\rИмя исходного и конечного файлов совпадают!");
-                return;
+                Handler.WarningHandler("Input and Output files have the same names", logger);
               }
             }
             else
             {
-              Console.WriteLine("ERROR\n\rИмя конечного файла не указано!");
-              return;
+              Handler.WarningHandler("Output file name not specified!", logger);
             }
           }
           else
           {
-            Console.WriteLine("ERROR\n\rИмя исходного файла не указано!");
-            return;
+            Handler.WarningHandler("Input file name not specified", logger);
           }
         }
       }
     }
 
+  }
 
+  static class Handler
+  {
+    public static void ErrorHandler(Exception e, Logger log)
+    {
+      Console.WriteLine("ERROR\n\r" + e.Message + "\n\r" + e.Source + "\n\r" + e.StackTrace);
+      log.Error(e.Message + "\n\r" + e.Source + "\n\r" + e.StackTrace);
+    }
+
+    public static void WarningHandler(String message, Logger log)
+    {
+      Console.WriteLine("WARNING\n\r" + message);
+      log.Warn(message);
+    }
   }
 }
